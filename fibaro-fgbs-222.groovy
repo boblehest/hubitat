@@ -2,11 +2,9 @@ metadata {
 	definition (name: "Fibaro FGBS-222 Smart Implant", namespace: "hubitat", author: "Jørn Lode") {
 		// TODO Register as composite device
 		capability "Actuator"
+		capability "Configuration"
 		capability "Sensor"
 		capability "Switch"
-
-		command "on1"
-		command "on2"
 
 		// TODO add fingerprint
 	}
@@ -17,9 +15,9 @@ metadata {
 
 	tiles {
 		standardTile("switch", "device.switch", width: 2, height: 2, canChangeIcon: true) {
-			state "off", label: '${currentValue}', action: "switch.on",
+			state "off", label: '${name}', action: "on",
 				icon: "st.switches.switch.off", backgroundColor: "#ffffff"
-			state "on", label: '${currentValue}', action: "switch.off",
+			state "on", label: '${name}', action: "off",
 				icon: "st.switches.switch.on", backgroundColor: "#00a0dc"
 		}
 
@@ -30,27 +28,11 @@ metadata {
 }
 
 def on() {
-	on1()
-}
-
-def off() {
-	off1()
-}
-
-def on1() {
 	encap(hubitat.zwave.commands.switchbinaryv1.SwitchBinarySet(switchValue: 0xff), 5)
 }
 
-def off1() {
+def off() {
 	encap(hubitat.zwave.commands.switchbinaryv1.SwitchBinarySet(switchValue: 0), 5)
-}
-
-def on2() {
-	encap(hubitat.zwave.commands.switchbinaryv1.SwitchBinarySet(switchValue: 0xff), 6)
-}
-
-def off2() {
-	encap(hubitat.zwave.commands.switchbinaryv1.SwitchBinarySet(switchValue: 0), 6)
 }
 
 def parse(String description) {
@@ -65,6 +47,38 @@ def parse(String description) {
 	}
 
 	result
+}
+
+// TODO Write code to sync configuration and other state
+def configure() {
+	// def configuration = new XmlSlurper().parseText(configuration_model())
+}
+
+def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
+	def encapsulatedCommand = cmd.encapsulatedCommand([0x25: 1, 0x20: 1])
+	if (encapsulatedCommand) {
+		zwaveEvent(encapsulatedCommand, cmd.sourceEndPoint as Integer)
+	} else {
+		log.debug "Ignored encapsulated command: ${cmd}"
+	}
+}
+
+def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinarySet cmd, ep=null) {
+	// if (!ep in [5, 6]) {
+	if (ep != 5) {
+		return;
+	}
+
+	createEvent(name: "switch", value: cmd.switchValue);
+}
+
+def zwaveEvent(hubitat.zwave.commands.basicv1.BasicSet cmd, ep=null) {
+	// if (!ep in [5, 6]) {
+	if (ep != 5) {
+		return;
+	}
+
+	createEvent(name: "switch", value: cmd.value);
 }
 
 def zwaveEvent(hubitat.zwave.Command cmd) {
