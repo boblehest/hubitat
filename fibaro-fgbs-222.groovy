@@ -2,6 +2,10 @@ metadata {
 	definition (name: "Fibaro FGBS-222 Smart Implant", namespace: "boblehest", author: "Jørn Lode") {
 		capability "Configuration"
 
+		command "childOn"
+		command "childOff"
+		command "childRefresh"
+
 		fingerprint deviceId: "4096", inClusters: "0x5E,0x25,0x85,0x8E,0x59,0x55,0x86,0x72,0x5A,0x73,0x98,0x9F,0x5B,0x31,0x60,0x70,0x56,0x71,0x75,0x7A,0x6C,0x22"
 	}
 
@@ -25,18 +29,16 @@ private initialize() {
 		addChildDevices()
 	}
 
-	// TODO Testing
-	// multiChannelAssociationV2.multiChannelAssociationSet(
-
-	// toEndpoint(zwave.associationV2.associationSet(
-	// 	groupingIdentifier: 2,
-	// 	nodeId: zwaveHubNodeId
-	// 	), 5).format()
-
-	formatCommands(1..3.collect {
+	/*formatCommands([
+		zwave.associationV2.associationRemove(groupingIdentifier: 2, nodeId: zwaveHubNodeId),
+		zwave.associationV2.associationRemove(groupingIdentifier: 3, nodeId: zwaveHubNodeId),
+		zwave.multiChannelAssociationV2.multiChannelAssociationRemove(groupingIdentifier: 2, nodeId: [zwaveHubNodeId]),
+	] + (1..3).collect {
 		zwave.associationV2.associationGet(
 			groupingIdentifier: it)
-	}, 500)
+	} + (1..3).collect {
+		zwave.multiChannelAssociationV2.multiChannelAssociationGet(groupingIdentifier: it)
+	}, 500)*/
 }
 
 // ----------------------------------------------------------------------------
@@ -55,7 +57,7 @@ private addChildDevices() {
 			descriptionText: "Child device creation failed.",
 			eventType: "ALERT",
 			name: "childDeviceCreation",
-			value: "failed",
+			value: e.toString(),
 			displayed: true,
 		)
 	}
@@ -84,34 +86,44 @@ private addChildDevices() {
 // -------- Outputs (EP 5 & 6) --------
 
 private addChildSwitches() {
-	5..6.eachWithIndex { ep, index ->
+	(5..6).eachWithIndex { ep, index ->
 		addChildDevice("Fibaro FGBS-222 Child Switch",
-			childNetworkId(ep), componentLabel: "Output ${index+1}")
+			childNetworkId(ep), [componentLabel: "Output ${index+1}",
+			completedSetup: true, label: "${device.displayName} - Output ${index+1}",
+			isComponent: true])
 	}
 }
 
 private setSwitch(value, channel) {
-	// TODO Should we also send a Get request? How often? Can't we have the
-	// device notify us whenever it changes?
-	toEndpoint(zwave.switchBinaryV1.switchBinarySet(switchValue: value), channel).format()
+	def cmds = [
+		toEndpoint(zwave.switchBinaryV1.switchBinarySet(switchValue: value), channel).format(),
+		toEndpoint(zwave.switchBinaryV1.switchBinaryGet(), channel).format(),
+	]
+
+	if (value) {
+		cmds + [
+			"delay 3500",
+			toEndpoint(zwave.switchBinaryV1.switchBinaryGet(), channel).format(),
+		]
+	} else {
+		cmds
+	}
 }
 
 def childOn(String dni) {
-	// formatCommands([
-	// 	toEndpoint(zwave.switchBinaryV1.switchBinarySet(switchValue: 0xff), 5),
-	// 	toEndpoint(zwave.basicV1.basicGet(), 5),
-	// 	toEndpoint(zwave.basicV1.basicGet(), 5),
-	// 	toEndpoint(zwave.sensorMultilevelV5.sensorMultilevelGet(sensorType: 1), 7), 
-	// ], 2000)
-
-	setSwitch(0xff, channelNumber(dni))
+	def ep = channelNumber(dni)
+	log.debug "Child on @ ep ${ep}"
+	setSwitch(0xff, ep)
 }
 
 def childOff(String dni) {
-	setSwitch(0, channelNumber(dni))
+	def ep = channelNumber(dni)
+	log.debug "Child off @ ep ${ep}"
+	setSwitch(0, ep)
 }
 
 def childRefresh(String dni) {
+	log.debug "Child refresh"
 	toEndpoint(zwave.switchBinaryV1.switchBinaryGet(), channelNumber(dni)).format()
 }
 
@@ -143,12 +155,9 @@ def parse(String description) {
 }
 
 private zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
-	// TODO Figure out what the parameter to `encapsulatedCommand` does.
-	// Try removing the argument.
-	def encapsulatedCommand = cmd.encapsulatedCommand([0x25: 1, 0x20: 1])
+	def encapsulatedCommand = cmd.encapsulatedCommand()
 	if (encapsulatedCommand) {
-		// TODO Is sourceEndPoint really not an integer?
-		zwaveEvent(encapsulatedCommand, cmd.sourceEndPoint.toInteger())
+		zwaveEvent(encapsulatedCommand, cmd.sourceEndPoint)
 	} else {
 		log.debug "Ignored encapsulated command: ${cmd}"
 	}
@@ -156,37 +165,30 @@ private zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cm
 
 private zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd, ep) {
 	def target = childDevices.find { it.deviceNetworkId == childNetworkId(ep) }
-	// TODO Why not createEvent? Try it.
-	childDevice?.sendEvent(name: "switch", value: cmd.value ? "on" : "off")
+	target?.sendEvent(name: "switch", value: cmd.value ? "on" : "off")
 }
 
 private zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
-	// TODO Are all settings properly set? Monitor the logs.
 	def configuration = new XmlSlurper().parseText(configuration_model())
 
 	def paramName = cmd.parameterNumber.toString()
 	def parameterInfo = configuration.Value.find { it.@index == paramName }
 	def byteSize = sizeOfParameter(parameterInfo)
 	if (byteSize != cmd.size) {
-		log.debug "Parameter ${paramName} has unexpected size ${cmd.size} (expected ${byteSize})"
+		log.warn "Parameter ${paramName} has unexpected size ${cmd.size} (expected ${byteSize})"
 	}
 
 	def remoteValue = bytesToInteger(cmd.configurationValue)
-	def localValue = settings[cmd.parameterNumber.toString()]
+	def localValue = settings[cmd.parameterNumber.toString()].toInteger()
 
 	if (localValue != remoteValue) {
-		log.debug "Parameter ${paramName} has value ${remoteValue} after trying to set it to ${localValue}"
+		log.warn "Parameter ${paramName} has value ${remoteValue.inspect()} after trying to set it to ${localValue.inspect()}"
 	}
 }
 
 // private zwaveEvent(hubitat.zwave.commands.sensormultilevelv5.SensorMultilevelReport cmd, ep) {
 // 	log.debug "Sensor @ endpoint ${ep} has value ${cmd.scaledSensorValue}"
 // 	createEvent(name: "temperature", value: cmd.scaledSensorValue)
-// }
-
-// private zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd, ep) {
-// 	log.debug "Switch @ endpoint ${ep} has value ${cmd.value}"
-// 	createEvent(name: "switch", value: cmd.value == 0 ? "off" : "on")
 // }
 
 private zwaveEvent(hubitat.zwave.Command cmd, ep=null) {
@@ -528,8 +530,20 @@ private integerToBytes(value, length) {
 }
 
 private sizeOfParameter(paramData) {
-	def typeSizes = [short: 2, four: 4, list: paramData.@size]
-	typeSizes[paramData.@type] ?: 1
+	switch (paramData.@type) {
+		case "short":
+			2
+			break
+		case "four":
+			4
+			break
+		case "list":
+			paramData.@size.toInteger()
+			break
+		default:
+			1
+			break
+	}
 }
 
 private channelNumber(String dni) {
